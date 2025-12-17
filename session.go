@@ -19,6 +19,7 @@ type Session struct {
 	streams    map[string]*Stream
 	config     *Config
 	acceptance chan *Stream
+	isClosed   bool
 }
 
 type Frame struct {
@@ -227,7 +228,12 @@ func (s *Session) Close() error {
 	for _, stream := range s.streams {
 		stream.Close()
 	}
+	s.isClosed = true
 	return nil
+}
+
+func (s *Session) IsClosed() bool {
+	return s.isClosed
 }
 
 func (s *Session) OpenStream() (net.Conn, error) {
