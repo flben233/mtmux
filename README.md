@@ -64,6 +64,12 @@ graph LR
     class Left,Right,Middle subgraphLabel
 ```
 
+## Install
+
+```shell
+go get github.com/flben233/mtmux
+```
+
 ## Example
 
 Server:
