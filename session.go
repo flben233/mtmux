@@ -236,6 +236,10 @@ func (s *Session) IsClosed() bool {
 	return s.isClosed
 }
 
+func (s *Session) NumStreams() int {
+	return len(s.streams)
+}
+
 func (s *Session) OpenStream() (net.Conn, error) {
 	streamID := rand.Text()
 	stream := s.newStream(streamID)
