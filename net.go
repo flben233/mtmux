@@ -6,14 +6,13 @@ import (
 )
 
 type Listener struct {
-	Network   string
 	Host      string
 	Port      uint64
 	Tunnels   int
 	Listeners []net.Listener
 }
 
-func ListenWithCustomFunc(network, addr string, tunnels int, listenFunc func(addr string) (net.Listener, error)) (*Listener, error) {
+func ListenWithCustomFunc(addr string, tunnels int, listenFunc func(addr string) (net.Listener, error)) (*Listener, error) {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
@@ -31,7 +30,6 @@ func ListenWithCustomFunc(network, addr string, tunnels int, listenFunc func(add
 		listeners = append(listeners, ln)
 	}
 	return &Listener{
-		Network:   network,
 		Host:      host,
 		Port:      port,
 		Tunnels:   tunnels,
@@ -43,7 +41,7 @@ func Listen(network, addr string, tunnels int) (*Listener, error) {
 	listen := func(addr string) (net.Listener, error) {
 		return net.Listen(network, addr)
 	}
-	return ListenWithCustomFunc(network, addr, tunnels, listen)
+	return ListenWithCustomFunc(addr, tunnels, listen)
 }
 
 func (l *Listener) Accept() ([]net.Conn, error) {
