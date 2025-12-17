@@ -32,6 +32,7 @@ func TestTCPTransport(t *testing.T) {
 		fmt.Println("server", session.ID)
 		session.Start(context.Background())
 		defer session.Close()
+		time.Sleep(100 * time.Millisecond)
 		stream, err := session.AcceptStream()
 		if err != nil {
 			t.Errorf("AcceptStream returned error: %v", err)
@@ -65,7 +66,6 @@ func TestTCPTransport(t *testing.T) {
 	session.Start(context.Background())
 	fmt.Println("client", session.ID)
 	defer session.Close()
-	time.Sleep(1000 * time.Millisecond)
 	stream, err := session.OpenStream()
 	if err != nil {
 		t.Fatalf("OpenStream returned error: %v", err)

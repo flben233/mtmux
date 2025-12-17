@@ -73,6 +73,7 @@ func (s *Session) newStream(streamID string) *Stream {
 	return &stream
 }
 
+// handleConn handles incoming data from a single connection in the bundle.
 func (s *Session) handleConn(ctx context.Context, conn net.Conn) {
 	scanner := bufio.NewReader(conn)
 	for {
@@ -94,6 +95,7 @@ func (s *Session) handleConn(ctx context.Context, conn net.Conn) {
 		if len(data) == 0 {
 			continue
 		}
+		// Process the received frame
 		var f Frame
 		json.Unmarshal([]byte(data), &f)
 		stream, ok := s.streams[f.StreamID]
@@ -109,11 +111,14 @@ func (s *Session) handleConn(ctx context.Context, conn net.Conn) {
 				return
 			}
 		}
+		// Deliver data to the appropriate stream
 		stream.ReadBuf <- f.Data
+		// Update the read index
 		stream.ReadIndex.Store(f.DataIndex)
 	}
 }
 
+// handleStream handles outgoing data for a single stream.
 func (s *Session) handleStream(ctx context.Context, streamID string) {
 	stream := s.streams[streamID]
 	for {
@@ -160,20 +165,28 @@ func (s *Session) sendControlMsg(msg *ControlMsg) error {
 	return nil
 }
 
+// handleControlMsg processes incoming control messages on the control stream.
 func (s *Session) handleControlMsg(ctx context.Context) {
+	buf := make([]byte, 16384)
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case msgData := <-s.streams[CONTROL_STREAM_ID].ReadBuf:
-			var msg ControlMsg
-			json.Unmarshal(msgData, &msg)
-			switch msg.Type {
-			case CONTROL_TYPE_OPEN_STREAM:
-				streamID := msg.Data
-				stream := s.newStream(streamID)
-				s.acceptance <- stream
-			}
+		default:
+		}
+		// Read control message
+		n, err := s.streams[CONTROL_STREAM_ID].Read(buf)
+		if err != nil {
+			fmt.Println("Error reading control message:", err)
+			return
+		}
+		var msg ControlMsg
+		json.Unmarshal(buf[:n], &msg)
+		switch msg.Type {
+		case CONTROL_TYPE_OPEN_STREAM:
+			streamID := msg.Data
+			stream := s.newStream(streamID)
+			s.acceptance <- stream
 		}
 	}
 }
