@@ -4,7 +4,6 @@ mtmux is a Go library that enables multiplexing multiple logical streams over mu
 
 ```mermaid
 graph LR
-
     S1[Stream 1]
     S2[Stream 2]
     S3[Stream 3]
@@ -50,13 +49,19 @@ graph LR
     B --> Sp5
     B --> Sp6
 
-    classDef stream fill:#e6f3ff,stroke:#3399ff;
-    classDef link fill:#fff2e6,stroke:#ff9933;
-    classDef point fill:#f0f0f0,stroke:#666,stroke-width:2px;
+    %% 定义样式：所有文本为黑色
+    classDef stream fill:#e6f3ff,stroke:#3399ff,color:black;
+    classDef link fill:#fff2e6,stroke:#ff9933,color:black;
+    classDef point fill:#f0f0f0,stroke:#666,stroke-width:2px,color:black;
+    classDef subgraphLabel color:black;
 
+    %% 应用样式
     class S1,S2,S3,S4,S5,S6,Sp1,Sp2,Sp3,Sp4,Sp5,Sp6 stream
     class L1,L2,L3 link
     class A,B point
+
+    %% 强制子图标题也为黑色（部分渲染器支持）
+    class Left,Right,Middle subgraphLabel
 ```
 
 ## Example
