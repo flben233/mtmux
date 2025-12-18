@@ -3,6 +3,7 @@ package mtmux
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -10,18 +11,27 @@ import (
 )
 
 type Stream struct {
-	ID            string
-	ReadBuf       chan []byte
-	WriteBuf      chan []byte
-	ReadDeadline  time.Time
-	WriteDeadline time.Time
-	ReadIndex     atomic.Uint64 // Received data index
-	WriteIndex    atomic.Uint64 // Sent data index
-	UnorderedBuf  map[uint64][]byte
-	mu            sync.Mutex
+	ID             string
+	ReadBuf        chan []byte
+	WriteBuf       chan []byte
+	ReadDeadline   time.Time
+	WriteDeadline  time.Time
+	ReadIndex      atomic.Uint64 // Received data index
+	WriteIndex     atomic.Uint64 // Sent data index
+	UnorderedBuf   map[uint64][]byte
+	readClosed     atomic.Bool // Indicates read end is closed (EOF received)
+	writeClosed    atomic.Bool // Indicates write end is closed (EOF sent)
+	writeBufClosed atomic.Bool // Indicates WriteBuf channel has been closed
+	eofReceived    atomic.Bool // EOF frame received, waiting for unordered buffer to drain
+	mu             sync.Mutex
 }
 
 func (s *Stream) Read(b []byte) (n int, err error) {
+	// Check if read end is already closed
+	if s.readClosed.Load() {
+		return 0, io.EOF
+	}
+
 	if s.ReadDeadline.IsZero() {
 		s.ReadDeadline = time.Now().Add(30 * time.Hour)
 	}
@@ -31,7 +41,11 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	select {
 	case <-ctx.Done():
 		return 0, ctx.Err()
-	case tb := <-s.ReadBuf:
+	case tb, ok := <-s.ReadBuf:
+		if !ok {
+			// Channel closed, return EOF
+			return 0, io.EOF
+		}
 		n := copy(b, tb)
 		if n < len(tb) {
 			// Put back remaining data
@@ -44,6 +58,11 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 }
 
 func (s *Stream) Write(b []byte) (n int, err error) {
+	// Check if write end is already closed
+	if s.writeClosed.Load() {
+		return 0, fmt.Errorf("write on closed stream")
+	}
+
 	if s.WriteDeadline.IsZero() {
 		s.WriteDeadline = time.Now().Add(30 * time.Hour)
 	}
@@ -63,6 +82,14 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	// if len(b) < maxSize {
 	nb := make([]byte, len(b))
 	copy(nb, b)
+
+	// Use defer+recover to handle write to closed channel
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("write to closed stream channel")
+		}
+	}()
+
 	s.WriteBuf <- nb
 	// }
 	// s.WriteBuf <- b
@@ -70,10 +97,70 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 }
 
 func (s *Stream) Close() error {
-	// close(s.ReadBuf)
-	// close(s.WriteBuf)
+	s.CloseRead()
+	s.CloseWrite()
+	// Close WriteBuf if not already closed by handleStream
+	if !s.writeBufClosed.Swap(true) {
+		close(s.WriteBuf)
+	}
 	// Flush unordered buffer
 	fmt.Println(s.ID, "Remaining: ", len(s.UnorderedBuf))
+	return nil
+}
+
+// CloseRead closes the read end of the stream (called when EOF is received)
+func (s *Stream) CloseRead() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Mark EOF as received
+	s.eofReceived.Store(true)
+	fmt.Println(s.ID, "EOF received, waiting for buffer to drain. Remaining:", len(s.UnorderedBuf))
+
+	// If unordered buffer is empty, close immediately
+	if len(s.UnorderedBuf) == 0 {
+		if !s.readClosed.Swap(true) {
+			close(s.ReadBuf)
+			fmt.Println(s.ID, "Read end closed (no pending data)")
+		}
+	}
+	// Otherwise, will be closed in Deliver when buffer drains
+
+	return nil
+}
+
+// CloseWrite closes the write end of the stream and sends EOF frame
+func (s *Stream) CloseWrite() error {
+	if !s.writeClosed.Swap(true) {
+		// First time closing write end, send EOF frame
+		// Signal to handleStream via a special EOF marker
+		// Check if WriteBuf is already closed before sending
+		if s.writeBufClosed.Load() {
+			// WriteBuf already closed, can't send EOF signal
+			fmt.Println(s.ID, "Write end closing, but WriteBuf already closed")
+			return nil
+		}
+
+		select {
+		case s.WriteBuf <- nil: // nil signals EOF
+			fmt.Println(s.ID, "Write end closing, EOF signal sent")
+		default:
+			// WriteBuf is full, send in goroutine with panic protection
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// WriteBuf was closed before we could send, that's ok
+						fmt.Println(s.ID, "Write end closing, WriteBuf closed before EOF send")
+					}
+				}()
+				// Double-check before sending
+				if !s.writeBufClosed.Load() {
+					s.WriteBuf <- nil
+					fmt.Println(s.ID, "Write end closing, EOF signal sent (async)")
+				}
+			}()
+		}
+	}
 	return nil
 }
 
@@ -105,6 +192,14 @@ func (s *Stream) SetWriteDeadline(t time.Time) error {
 
 func (s *Stream) Deliver(data []byte, idx uint64) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check if read end is closed
+	if s.readClosed.Load() {
+		fmt.Println("Deliver: stream read end already closed, dropping data", idx)
+		return
+	}
+
 	fmt.Println("Deliver: ", idx)
 	if s.ReadIndex.Load()+1 == idx {
 		s.ReadBuf <- data
@@ -115,6 +210,8 @@ func (s *Stream) Deliver(data []byte, idx uint64) {
 		}
 		s.UnorderedBuf[idx] = data
 	}
+
+	// Deliver any ordered frames from buffer
 	for i := s.ReadIndex.Load() + 1; ; i++ {
 		if d, ok := s.UnorderedBuf[i]; ok {
 			s.ReadBuf <- d
@@ -125,5 +222,12 @@ func (s *Stream) Deliver(data []byte, idx uint64) {
 			break
 		}
 	}
-	s.mu.Unlock()
+
+	// If EOF was received and buffer is now empty, close the read channel
+	if s.eofReceived.Load() && len(s.UnorderedBuf) == 0 {
+		if !s.readClosed.Swap(true) {
+			close(s.ReadBuf)
+			fmt.Println(s.ID, "Read end closed (all data delivered after EOF)")
+		}
+	}
 }

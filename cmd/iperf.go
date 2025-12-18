@@ -71,19 +71,32 @@ func startMTMuxServer() {
 			var wg sync.WaitGroup
 			wg.Add(2)
 
+			// Copy from stream to target conn (upload direction)
 			go func() {
 				defer wg.Done()
-				io.Copy(conn, reader)
-				//copyWithLogging(conn, reader, "stream->conn", addr)
-				fmt.Println("Exit server copy from stream to conn")
+				n, err := io.Copy(conn, reader)
+				if err != nil {
+					log.Printf("stream->conn copy error: %v", err)
+				}
+				// Signal to target that we're done sending
+				if tcpConn, ok := conn.(*net.TCPConn); ok {
+					tcpConn.CloseWrite()
+				}
+				log.Printf("Exit server copy from stream to conn (copied %d bytes)", n)
 			}()
 
+			// Copy from target conn to stream (download direction - results go back this way)
 			go func() {
 				defer wg.Done()
-				io.Copy(stream, conn)
-				//copyWithLogging(stream, conn, "conn->stream", addr)
-				fmt.Println("Exit server copy from conn to stream")
+				n, err := io.Copy(stream, conn)
+				if err != nil && err != io.EOF {
+					log.Printf("conn->stream copy error: %v", err)
+				}
+				// Close write end to signal EOF back to client
+				stream.CloseWrite()
+				log.Printf("Exit server copy from conn to stream (copied %d bytes)", n)
 			}()
+
 			wg.Wait()
 		}(stream.(*mtmux.Stream))
 	}
@@ -144,18 +157,29 @@ func startMTMuxClient() {
 
 			var wg sync.WaitGroup
 			wg.Add(2)
+
+			// Copy from local to stream (upload direction)
 			go func() {
 				defer wg.Done()
-				io.Copy(stream, localConn)
-				//copyWithLogging(stream, localConn, "local->stream", "client-local")
-				fmt.Println("Exit client copy from local to stream")
+				n, err := io.Copy(stream, localConn)
+				if err != nil {
+					log.Printf("local->stream copy error: %v", err)
+				}
+				// Close write end to signal EOF to remote
+				stream.CloseWrite()
+				log.Printf("Exit client copy from local to stream (copied %d bytes)", n)
 			}()
+
+			// Copy from stream to local (download direction - results come back this way)
 			go func() {
 				defer wg.Done()
-				io.Copy(localConn, stream)
-				//copyWithLogging(localConn, stream, "stream->local", "client-local")
-				fmt.Println("Exit client copy from stream to local")
+				n, err := io.Copy(localConn, stream)
+				if err != nil && err != io.EOF {
+					log.Printf("stream->local copy error: %v", err)
+				}
+				log.Printf("Exit client copy from stream to local (copied %d bytes)", n)
 			}()
+
 			wg.Wait()
 			log.Println("connection proxy finished")
 		}(conn, stream.(*mtmux.Stream))

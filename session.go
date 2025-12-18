@@ -26,6 +26,7 @@ type Frame struct {
 	StreamID  string
 	Data      []byte
 	DataIndex uint64
+	IsEOF     bool // Signals that the sender has closed the write end
 }
 
 type ControlMsg struct {
@@ -65,8 +66,8 @@ func Client(conns []net.Conn, config *Config) (*Session, error) {
 func (s *Session) newStream(streamID string) *Stream {
 	stream := Stream{
 		ID:            streamID,
-		ReadBuf:       make(chan []byte),
-		WriteBuf:      make(chan []byte),
+		ReadBuf:       make(chan []byte, 256), // Larger buffer for multi-stream
+		WriteBuf:      make(chan []byte, 256), // Larger buffer for multi-stream
 		ReadDeadline:  time.Time{},
 		WriteDeadline: time.Time{},
 		UnorderedBuf:  make(map[uint64][]byte),
@@ -102,6 +103,14 @@ func (s *Session) handleConn(ctx context.Context, conn net.Conn) {
 			fmt.Println("Received frame for unknown stream:", f.StreamID)
 			continue
 		}
+
+		// Handle EOF frame
+		if f.IsEOF {
+			fmt.Println("Received EOF for stream:", f.StreamID)
+			stream.CloseRead()
+			continue
+		}
+
 		//fmt.Println(s.ID, "Read from connection", string(f.Data))
 		if f.DataIndex != stream.ReadIndex.Load()+1 {
 			fmt.Println("Out of ordered frame. ", f.DataIndex, stream.ReadIndex.Load()+1)
@@ -121,11 +130,66 @@ func (s *Session) handleStream(ctx context.Context, streamID string) {
 		select {
 		case <-ctx.Done():
 			return
-		case data := <-stream.WriteBuf:
+		case data, ok := <-stream.WriteBuf:
+			if !ok {
+				// WriteBuf channel closed
+				return
+			}
+
+			// Check if data is nil (EOF signal)
+			if data == nil {
+				// Send EOF frame
+				f := Frame{
+					StreamID:  streamID,
+					Data:      nil,
+					DataIndex: 0,
+					IsEOF:     true,
+				}
+				frameData, _ := json.Marshal(f)
+				frameData = append(frameData, '\n')
+
+				// Write EOF frame
+				var err error
+				for {
+					conn := <-s.connChan
+					for sent := 0; sent < len(frameData); {
+						n, e := conn.Write(frameData[sent:])
+						sent += n
+						err = e
+						if e != nil {
+							break
+						}
+					}
+					if err == nil {
+						s.connChan <- conn
+						fmt.Println(s.ID, "Sent EOF frame for stream:", streamID)
+						// Close WriteBuf to signal completion (only if not already closed)
+						if !stream.writeBufClosed.Swap(true) {
+							close(stream.WriteBuf)
+						}
+						return // Exit after sending EOF
+					} else {
+						// Don't put back the conn if it's closed
+						if !errors.Is(err, net.ErrClosed) {
+							s.connChan <- conn // Put it back for retry or other streams
+						}
+						if len(s.connChan) == 0 {
+							fmt.Println("All connections are closed. Stream handler exiting.")
+							return
+						}
+						fmt.Println("Error writing EOF frame:", err)
+						// Don't continue immediately - break and return to avoid infinite loop
+						return
+					}
+				}
+			}
+
+			// Normal data frame
 			f := Frame{
 				StreamID:  streamID,
 				Data:      data,
 				DataIndex: stream.WriteIndex.Load() + 1,
+				IsEOF:     false,
 			}
 			frameData, _ := json.Marshal(f)
 			frameData = append(frameData, '\n')
@@ -147,14 +211,16 @@ func (s *Session) handleStream(ctx context.Context, streamID string) {
 					stream.WriteIndex.Store(f.DataIndex)
 					break
 				} else {
-					if errors.Is(err, net.ErrClosed) {
-						continue
+					// Don't put back the conn if it's closed
+					if !errors.Is(err, net.ErrClosed) {
+						s.connChan <- conn // Put it back for retry or other streams
 					}
 					if len(s.connChan) == 0 {
 						fmt.Println("All connections are closed. Stream handler exiting.")
 						return
 					}
 					fmt.Println("Error writing to connection:", err)
+					// Retry with another connection
 				}
 			}
 		}
