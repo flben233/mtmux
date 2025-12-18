@@ -69,6 +69,7 @@ func (s *Session) newStream(streamID string) *Stream {
 		WriteBuf:      make(chan []byte),
 		ReadDeadline:  time.Time{},
 		WriteDeadline: time.Time{},
+		UnorderedBuf:  make(map[uint64][]byte),
 	}
 	s.streams[streamID] = &stream
 	return &stream
@@ -93,29 +94,23 @@ func (s *Session) handleConn(ctx context.Context, conn net.Conn) {
 			fmt.Println("Error reading from connection:", err)
 			return
 		}
-		if len(data) == 0 {
-			continue
-		}
 		// Process the received frame
 		var f Frame
 		json.Unmarshal([]byte(data), &f)
 		stream, ok := s.streams[f.StreamID]
 		if !ok {
+			fmt.Println("Received frame for unknown stream:", f.StreamID)
 			continue
 		}
-		for totalWait := 0 * time.Millisecond; f.DataIndex > stream.ReadIndex.Load()+1; {
-			// Wait for missing data
-			time.Sleep(1 * time.Millisecond)
-			totalWait += 1 * time.Millisecond
-			if totalWait > s.config.Timeout {
-				fmt.Println("Timeout waiting for missing data.")
-				return
-			}
+		//fmt.Println(s.ID, "Read from connection", string(f.Data))
+		if f.DataIndex != stream.ReadIndex.Load()+1 {
+			fmt.Println("Out of ordered frame. ", f.DataIndex, stream.ReadIndex.Load()+1)
 		}
-		// Deliver data to the appropriate stream
-		stream.ReadBuf <- f.Data
-		// Update the read index
-		stream.ReadIndex.Store(f.DataIndex)
+		stream.Deliver(f.Data, f.DataIndex)
+		if f.DataIndex != stream.ReadIndex.Load()+1 {
+			fmt.Println("Out of ordered frame remaining: ", len(stream.UnorderedBuf), stream.ReadIndex.Load()+1)
+		}
+		// fmt.Println(stream.ReadIndex.Load())
 	}
 }
 
@@ -135,9 +130,18 @@ func (s *Session) handleStream(ctx context.Context, streamID string) {
 			frameData, _ := json.Marshal(f)
 			frameData = append(frameData, '\n')
 			// Write to one of the connections in the bundle
+			var err error
 			for {
 				conn := <-s.connChan
-				_, err := conn.Write(frameData)
+				for sent := 0; sent < len(frameData); {
+					n, e := conn.Write(frameData[sent:])
+					sent += n
+					err = e
+					if e != nil {
+						break
+					}
+				}
+				//fmt.Println(s.ID, "Writing to connection:", string(data))
 				if err == nil {
 					s.connChan <- conn
 					stream.WriteIndex.Store(f.DataIndex)
@@ -193,20 +197,20 @@ func (s *Session) handleControlMsg(ctx context.Context) {
 }
 
 func (s *Session) keepAlive(ctx context.Context) {
-	for {
-		// Send keep-alive frames on the control stream
-		msg := ControlMsg{
-			Type: CONTROL_TYPE_KEEP_ALIVE,
-			Data: "",
-		}
-		s.sendControlMsg(&msg)
-		// Sleep for a predefined interval before sending the next keep-alive
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(s.config.KeepAliveInterval):
-		}
-	}
+	// for {
+	// 	// Send keep-alive frames on the control stream
+	// 	msg := ControlMsg{
+	// 		Type: CONTROL_TYPE_KEEP_ALIVE,
+	// 		Data: "",
+	// 	}
+	// 	s.sendControlMsg(&msg)
+	// 	// Sleep for a predefined interval before sending the next keep-alive
+	// 	select {
+	// 	case <-ctx.Done():
+	// 		return
+	// 	case <-time.After(s.config.KeepAliveInterval):
+	// 	}
+	// }
 }
 
 func (s *Session) Start(ctx context.Context) {
