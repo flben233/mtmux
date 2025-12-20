@@ -17,6 +17,8 @@ import (
 
 type Session struct {
 	ID            string
+	LocalAddr     net.Addr
+	RemoteAddr    net.Addr
 	outConnChan   chan net.Conn
 	connBundle    []net.Conn
 	streams       sync.Map
@@ -54,6 +56,8 @@ func newSession(conns []net.Conn, config *Config) *Session {
 	}
 	return &Session{
 		ID:            rand.Text(),
+		LocalAddr:     conns[0].LocalAddr(),
+		RemoteAddr:    conns[0].RemoteAddr(),
 		outConnChan:   connChannel,
 		connBundle:    conns,
 		config:        config,
