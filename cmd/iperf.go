@@ -7,8 +7,12 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"os/signal"
+	"runtime/pprof"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/flben233/mtmux"
@@ -223,10 +227,18 @@ func copyWithLogging(dst io.Writer, src io.Reader, name, peer string) {
 	}
 }
 
-// TODO: Iperf多线程写入仍有问题，单线程多次写入也有问题
 func main() {
+	f, _ := os.Create("CPU.out")
+	defer f.Close()
+	pprof.StartCPUProfile(f)
+	// defer pprof.StopCPUProfile()
 	go startMTMuxServer()
 	time.Sleep(2000 * time.Millisecond)
 	go startMTMuxClient()
-	select {}
+	// 等待中断信号
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan // 阻塞直到收到信号
+	// 收到信号后停止 profiling
+	pprof.StopCPUProfile()
 }

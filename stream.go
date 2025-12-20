@@ -2,41 +2,44 @@ package mtmux
 
 import (
 	"bytes"
-	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 type Stream struct {
-	ID            string
-	ReadBuf       *bytes.Buffer
-	WriteBuf      chan []byte
-	ReadDeadline  time.Time
-	WriteDeadline time.Time
-	ReadIndex     atomic.Uint64 // Received data index
-	WriteIndex    atomic.Uint64 // Sent data index
-	UnorderedBuf  map[uint64][]byte
-	endIndex      atomic.Uint64
-	writeClosed   atomic.Bool
-	mu            sync.Mutex
-	readCond      *sync.Cond
-	eof           atomic.Bool
+	ID           string
+	ReadBuf      *bytes.Buffer
+	WriteBuf     chan []byte
+	ReadIndex    atomic.Uint64 // Received data index
+	WriteIndex   atomic.Uint64 // Sent data index
+	UnorderedBuf map[uint64][]byte
+	endIndex     atomic.Uint64
+	writeClosed  atomic.Bool
+	mu           sync.Mutex
+	readCond     *sync.Cond
+	eof          atomic.Bool
+	bufPool      *sync.Pool
 }
+
+const BUFFER_SIZE = 32 * 1024 // 32KB buffer size
 
 // NewStream creates a new stream with the given streamID
 func NewStream(streamID string) *Stream {
 	stream := Stream{
-		ID:            streamID,
-		ReadBuf:       bytes.NewBuffer(make([]byte, 0)),
-		WriteBuf:      make(chan []byte),
-		ReadDeadline:  time.Time{},
-		WriteDeadline: time.Time{},
-		UnorderedBuf:  make(map[uint64][]byte),
-		readCond:      sync.NewCond(&sync.Mutex{}),
+		ID:           streamID,
+		ReadBuf:      bytes.NewBuffer(make([]byte, 0)),
+		WriteBuf:     make(chan []byte),
+		UnorderedBuf: make(map[uint64][]byte),
+		readCond:     sync.NewCond(&sync.Mutex{}),
+	}
+	stream.bufPool = &sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 0, BUFFER_SIZE) // Adjust size as needed
+		},
 	}
 	return &stream
 }
@@ -50,20 +53,14 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	for s.ReadBuf.Len() == 0 {
 		s.readCond.Wait()
 	}
-	// Set up context with deadline
-	if s.ReadDeadline.IsZero() {
-		s.ReadDeadline = time.Now().Add(30 * time.Hour)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Until(s.ReadDeadline))
-	s.ReadDeadline = time.Time{}
-	defer cancel()
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	default:
-	}
 	// Read data from buffer
 	n, err = s.ReadBuf.Read(b)
+	if err != nil {
+		fmt.Println("Err:", err)
+	}
+	if errors.Is(err, io.EOF) {
+		err = nil
+	}
 	s.readCond.L.Unlock()
 	return n, err
 }
@@ -73,17 +70,13 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	if s.writeClosed.Load() {
 		return 0, io.ErrClosedPipe
 	}
-
-	if s.WriteDeadline.IsZero() {
-		s.WriteDeadline = time.Now().Add(30 * time.Hour)
+	var nb []byte
+	if len(b) > BUFFER_SIZE {
+		nb = make([]byte, len(b))
+	} else {
+		nb = s.bufPool.Get().([]byte)
+		nb = nb[:len(b)] // Copy function only copy up to len(b), so we need to reslice it first
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Until(s.WriteDeadline))
-	s.WriteDeadline = time.Time{}
-	defer cancel()
-	if ctx.Err() != nil {
-		return 0, ctx.Err()
-	}
-	nb := make([]byte, len(b))
 	copy(nb, b)
 	s.WriteBuf <- nb
 	return len(b), nil
@@ -121,22 +114,6 @@ func (s *Stream) RemoteAddr() net.Addr {
 	return nil
 }
 
-func (s *Stream) SetDeadline(t time.Time) error {
-	s.ReadDeadline = t
-	s.WriteDeadline = t
-	return nil
-}
-
-func (s *Stream) SetReadDeadline(t time.Time) error {
-	s.ReadDeadline = t
-	return nil
-}
-
-func (s *Stream) SetWriteDeadline(t time.Time) error {
-	s.WriteDeadline = t
-	return nil
-}
-
 // DO NOT MODIFY data AFTER PASSING TO Deliver
 func (s *Stream) Deliver(data []byte, idx uint64, isEOF bool) error {
 	s.mu.Lock()
@@ -149,17 +126,16 @@ func (s *Stream) Deliver(data []byte, idx uint64, isEOF bool) error {
 	}
 
 	if isEOF {
-		s.endIndex.Store(idx)
-		s.eof.Store(true)
+		s.CloseRead()
 	}
 
 	if s.ReadIndex.Load()+1 == idx {
 		s.ReadBuf.Write(data)
 		s.ReadIndex.Store(idx)
 	} else {
-		if idx != s.ReadIndex.Load()+1 {
-			fmt.Println("Deliver Out of ordered frame. ", idx, s.ReadIndex.Load()+1)
-		}
+		// if idx != s.ReadIndex.Load()+1 {
+		// 	fmt.Println("Deliver Out of ordered frame. ", idx, s.ReadIndex.Load()+1)
+		// }
 		s.UnorderedBuf[idx] = data
 	}
 
@@ -176,6 +152,10 @@ func (s *Stream) Deliver(data []byte, idx uint64, isEOF bool) error {
 	}
 	s.readCond.Signal()
 	return nil
+}
+
+func (s *Stream) PutBuffer(buf []byte) {
+	s.bufPool.Put(buf)
 }
 
 func (s *Stream) IsClosed() bool {

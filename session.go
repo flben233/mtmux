@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,11 +11,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 type Session struct {
 	ID            string
-	connChan      chan net.Conn
+	outConnChan   chan net.Conn
 	connBundle    []net.Conn
 	streams       sync.Map
 	config        *Config
@@ -53,7 +54,7 @@ func newSession(conns []net.Conn, config *Config) *Session {
 	}
 	return &Session{
 		ID:            rand.Text(),
-		connChan:      connChannel,
+		outConnChan:   connChannel,
 		connBundle:    conns,
 		config:        config,
 		streamOpen:    make(chan string, 1),
@@ -106,21 +107,19 @@ func (s *Session) inbound(ctx context.Context, conn net.Conn) {
 		// if f.DataIndex != stream.ReadIndex.Load()+1 {
 		// 	fmt.Println("Out of ordered frame. ", f.DataIndex, stream.ReadIndex.Load()+1)
 		// }
-		if f.DataLen != 0 {
-			rawData := make([]byte, f.DataLen)
-			_, err = io.ReadFull(reader, rawData)
-			if err != nil {
-				fmt.Println("Error reading frame data:", err)
-				continue
-			}
+		rawData := make([]byte, f.DataLen)
+		_, err = io.ReadFull(reader, rawData)
+		if err != nil {
+			fmt.Println("Error reading frame data:", err)
+			continue
+		}
 
-			err = stream.Deliver(rawData, f.DataIndex, f.IsEOF)
-			if err != nil {
-				if errors.Is(err, io.ErrClosedPipe) {
-					s.streams.Delete(f.StreamID)
-				} else {
-					fmt.Println("Error delivering data to stream:", err)
-				}
+		err = stream.Deliver(rawData, f.DataIndex, f.IsEOF)
+		if err != nil {
+			if errors.Is(err, io.ErrClosedPipe) {
+				s.streams.Delete(f.StreamID)
+			} else {
+				fmt.Println("Error delivering data to stream:", err)
 			}
 		}
 	}
@@ -139,20 +138,21 @@ func (s *Session) outbound(ctx context.Context, stream *Stream) {
 				DataIndex: stream.WriteIndex.Add(1),
 				IsEOF:     !ok,
 			}
-			conn := <-s.connChan
+			conn := <-s.outConnChan
 			if !ok {
-				frameData, _ := json.Marshal(f)
+				frameData, _ := json.MarshalNoEscape(f)
 				frameData = append(frameData, '\n')
 				_, err := conn.Write(frameData)
 				if err != nil {
 					fmt.Println("Error writing EOF frame to connection:", err)
 				}
-				s.connChan <- conn
+				s.outConnChan <- conn
 				fmt.Println(stream.ID, "exited.")
 				return
 			} else {
 				// Read data from stream's WriteBuf
 				totalSize := len(dataBlock)
+				originalData := dataBlock
 				for totalSize > 0 {
 					size := min(max(totalSize, 32*1024), totalSize)
 					totalSize -= size
@@ -172,7 +172,8 @@ func (s *Session) outbound(ctx context.Context, stream *Stream) {
 						fmt.Println("Error writing frame to connection:", err)
 					}
 				}
-				s.connChan <- conn
+				s.outConnChan <- conn
+				stream.PutBuffer(originalData[:0])
 			}
 		}
 	}
