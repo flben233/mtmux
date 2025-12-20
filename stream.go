@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type Stream struct {
@@ -168,4 +169,28 @@ func (s *Stream) IsReadClosed() bool {
 
 func (s *Stream) IsWriteClosed() bool {
 	return s.writeClosed.Load()
+}
+
+// SetDeadline sets the read and write deadlines associated with the stream.
+// Currently not implemented for mtmux streams.
+func (s *Stream) SetDeadline(t time.Time) error {
+	// MTMux streams don't currently support deadlines
+	// This is a no-op to satisfy net.Conn interface
+	return nil
+}
+
+// SetReadDeadline sets the deadline for future Read calls.
+// Currently not implemented for mtmux streams.
+func (s *Stream) SetReadDeadline(t time.Time) error {
+	// MTMux streams don't currently support deadlines
+	// This is a no-op to satisfy net.Conn interface
+	return nil
+}
+
+// SetWriteDeadline sets the deadline for future Write calls.
+// Currently not implemented for mtmux streams.
+func (s *Stream) SetWriteDeadline(t time.Time) error {
+	// MTMux streams don't currently support deadlines
+	// This is a no-op to satisfy net.Conn interface
+	return nil
 }

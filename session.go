@@ -165,9 +165,8 @@ func (s *Session) outbound(ctx context.Context, stream *Stream) {
 						fmt.Println("Error marshaling frame:", err)
 						continue
 					}
-					frameData = append(frameData, '\n')
-					frameData = append(frameData, data...)
-					_, err = conn.Write(frameData)
+					buffer := net.Buffers{frameData, []byte{'\n'}, data}
+					_, err = buffer.WriteTo(conn)
 					if err != nil {
 						fmt.Println("Error writing frame to connection:", err)
 					}
