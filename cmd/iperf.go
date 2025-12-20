@@ -78,10 +78,7 @@ func startMTMuxServer() {
 				if err != nil {
 					log.Printf("stream->conn copy error: %v", err)
 				}
-				// Signal to target that we're done sending
-				if tcpConn, ok := conn.(*net.TCPConn); ok {
-					tcpConn.CloseWrite()
-				}
+				conn.(*net.TCPConn).CloseWrite()
 				log.Printf("Exit server copy from stream to conn (copied %d bytes)", n)
 			}()
 
@@ -92,13 +89,13 @@ func startMTMuxServer() {
 				if err != nil && err != io.EOF {
 					log.Printf("conn->stream copy error: %v", err)
 				}
-				// Close write end to signal EOF back to client
 				stream.CloseWrite()
+				conn.(*net.TCPConn).CloseRead()
 				log.Printf("Exit server copy from conn to stream (copied %d bytes)", n)
 			}()
 
 			wg.Wait()
-		}(stream.(*mtmux.Stream))
+		}(stream)
 	}
 }
 
@@ -167,6 +164,7 @@ func startMTMuxClient() {
 				}
 				// Close write end to signal EOF to remote
 				stream.CloseWrite()
+				localConn.(*net.TCPConn).CloseRead()
 				log.Printf("Exit client copy from local to stream (copied %d bytes)", n)
 			}()
 
@@ -177,12 +175,13 @@ func startMTMuxClient() {
 				if err != nil && err != io.EOF {
 					log.Printf("stream->local copy error: %v", err)
 				}
+				localConn.(*net.TCPConn).CloseWrite()
 				log.Printf("Exit client copy from stream to local (copied %d bytes)", n)
 			}()
 
 			wg.Wait()
 			log.Println("connection proxy finished")
-		}(conn, stream.(*mtmux.Stream))
+		}(conn, stream)
 	}
 }
 
@@ -224,6 +223,7 @@ func copyWithLogging(dst io.Writer, src io.Reader, name, peer string) {
 	}
 }
 
+// TODO: Iperf多线程写入仍有问题，单线程多次写入也有问题
 func main() {
 	go startMTMuxServer()
 	time.Sleep(2000 * time.Millisecond)

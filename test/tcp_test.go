@@ -17,8 +17,8 @@ func TestTCPTransport(t *testing.T) {
 			t.Errorf("Listen returned error: %v", err)
 			return
 		}
-		defer ln.Close()
 		bundle, err := ln.Accept()
+		ln.Close()
 		if err != nil {
 			t.Errorf("Accept returned error: %v", err)
 			return
@@ -129,7 +129,7 @@ func TestMultiStreamsTCPTransport(t *testing.T) {
 					t.Errorf("unexpected data: %q", buf[:n])
 				}
 				fmt.Println(string(buf[:n]))
-			}(stream.(*mtmux.Stream))
+			}(stream)
 		}
 		time.Sleep(10000 * time.Millisecond)
 	}()
@@ -148,28 +148,26 @@ func TestMultiStreamsTCPTransport(t *testing.T) {
 	fmt.Println("client", session.ID)
 	defer session.Close()
 	for i := 0; i < 8; i++ {
-		go func() {
-			stream, err := session.OpenStream()
+		stream, err := session.OpenStream()
+		if err != nil {
+			t.Errorf("OpenStream returned error: %v", err)
+		}
+		go func(stream *mtmux.Stream) {
+			buf := make([]byte, 1024)
+			n, err := stream.Read(buf)
 			if err != nil {
-				t.Errorf("OpenStream returned error: %v", err)
+				t.Errorf("Read returned error: %v", err)
 			}
-			go func(stream *mtmux.Stream) {
-				buf := make([]byte, 1024)
-				n, err := stream.Read(buf)
-				if err != nil {
-					t.Errorf("Read returned error: %v", err)
-				}
-				if string(buf[:n]) != stream.ID+" hello" {
-					t.Errorf("unexpected data: %q", buf[:n])
-				}
-				fmt.Println(string(buf[:n]))
-				_, err = stream.Write([]byte(stream.ID + " world"))
-				if err != nil {
-					t.Errorf("Write returned error: %v", err)
-				}
-				time.Sleep(1000 * time.Millisecond)
-			}(stream.(*mtmux.Stream))
-		}()
+			if string(buf[:n]) != stream.ID+" hello" {
+				t.Errorf("unexpected data: %q", buf[:n])
+			}
+			fmt.Println(string(buf[:n]))
+			_, err = stream.Write([]byte(stream.ID + " world"))
+			if err != nil {
+				t.Errorf("Write returned error: %v", err)
+			}
+			time.Sleep(1000 * time.Millisecond)
+		}(stream)
 	}
 	time.Sleep(10000 * time.Millisecond)
 }
