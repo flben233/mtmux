@@ -3,7 +3,6 @@ package mtmux
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -57,7 +56,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 	// Read data from buffer
 	n, err = s.ReadBuf.Read(b)
 	if err != nil {
-		fmt.Println("Err:", err)
+		Error("Err:", err)
 	}
 	if errors.Is(err, io.EOF) {
 		err = nil
@@ -90,7 +89,7 @@ func (s *Stream) Close() error {
 	s.writeClosed.Store(true)
 	s.endIndex.Store(s.ReadIndex.Load())
 	// Flush unordered buffer
-	fmt.Println(s.ID, "Remaining: ", len(s.UnorderedBuf))
+	Info(s.ID, "Remaining:", len(s.UnorderedBuf))
 	return nil
 }
 
@@ -122,7 +121,7 @@ func (s *Stream) Deliver(data []byte, idx uint64, isEOF bool) error {
 
 	// Check if read end is closed
 	if s.IsReadClosed() {
-		fmt.Println("Deliver: stream read end already closed, dropping data", idx)
+		Warn("Deliver: stream read end already closed, dropping data", idx)
 		return io.ErrClosedPipe
 	}
 

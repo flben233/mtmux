@@ -86,7 +86,7 @@ func (s *Session) inbound(ctx context.Context, conn net.Conn) {
 			} else if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			fmt.Println("Error reading from connection:", err)
+			Error("Error reading from connection:", err)
 			return
 		}
 		// Process the received frame
@@ -94,12 +94,12 @@ func (s *Session) inbound(ctx context.Context, conn net.Conn) {
 		json.Unmarshal([]byte(data), &f)
 		streamAny, ok := s.streams.Load(f.StreamID)
 		if !ok {
-			fmt.Println("Received frame for unknown stream:", f.StreamID)
+			Warn("Received frame for unknown stream:", f.StreamID)
 			continue
 		}
 		stream := streamAny.(*Stream)
 		if stream.IsClosed() {
-			fmt.Println("Received frame for closed stream:", f.StreamID)
+			Warn("Received frame for closed stream:", f.StreamID)
 			continue
 		}
 
@@ -110,7 +110,7 @@ func (s *Session) inbound(ctx context.Context, conn net.Conn) {
 		rawData := make([]byte, f.DataLen)
 		_, err = io.ReadFull(reader, rawData)
 		if err != nil {
-			fmt.Println("Error reading frame data:", err)
+			Error("Error reading frame data:", err)
 			continue
 		}
 
@@ -119,7 +119,7 @@ func (s *Session) inbound(ctx context.Context, conn net.Conn) {
 			if errors.Is(err, io.ErrClosedPipe) {
 				s.streams.Delete(f.StreamID)
 			} else {
-				fmt.Println("Error delivering data to stream:", err)
+				Error("Error delivering data to stream:", err)
 			}
 		}
 	}
@@ -144,10 +144,10 @@ func (s *Session) outbound(ctx context.Context, stream *Stream) {
 				frameData = append(frameData, '\n')
 				_, err := conn.Write(frameData)
 				if err != nil {
-					fmt.Println("Error writing EOF frame to connection:", err)
+					Error("Error writing EOF frame to connection:", err)
 				}
 				s.outConnChan <- conn
-				fmt.Println(stream.ID, "exited.")
+				Info(stream.ID, "exited.")
 				return
 			} else {
 				// Read data from stream's WriteBuf
@@ -162,9 +162,10 @@ func (s *Session) outbound(ctx context.Context, stream *Stream) {
 					// Send frame over one of the connections in the bundle
 					frameData, err := json.Marshal(f)
 					if err != nil {
-						fmt.Println("Error marshaling frame:", err)
+						Error("Error marshaling frame:", err)
 						continue
 					}
+					// TODO: 排查这个net.Buffers导致的数据不完整的问题
 					// buffer := net.Buffers{frameData, []byte{'\n'}, data}
 					// _, err = buffer.WriteTo(conn)
 					// if err != nil {
@@ -174,7 +175,7 @@ func (s *Session) outbound(ctx context.Context, stream *Stream) {
 					frameData = append(frameData, data...)
 					_, err = conn.Write(frameData)
 					if err != nil {
-						fmt.Println("Error writing frame to connection:", err)
+						Error("Error writing frame to connection:", err)
 					}
 				}
 				s.outConnChan <- conn
@@ -195,7 +196,7 @@ func (s *Session) streamsGarbageCollector(ctx context.Context) {
 			stream := streamAny.(*Stream)
 			if stream.IsClosed() {
 				s.streams.Delete(stream.ID)
-				fmt.Println("Stream", stream.ID, "garbage collected.")
+				Info("Stream", stream.ID, "garbage collected.")
 			}
 			return true
 		})
@@ -229,12 +230,12 @@ func (s *Session) handleControlMsg(ctx context.Context) {
 		// Read control message
 		streamAny, ok := s.streams.Load(CONTROL_STREAM_ID)
 		if !ok {
-			fmt.Println("control stream not found")
+			Warn("control stream not found")
 			return
 		}
 		n, err := streamAny.(*Stream).Read(buf)
 		if err != nil {
-			fmt.Println("Error reading control message:", err)
+			Error("Error reading control message:", err)
 			return
 		}
 		var msg ControlMsg
@@ -252,7 +253,7 @@ func (s *Session) addStream(stream *Stream) {
 	s.streams.Store(stream.ID, stream)
 	s.numStreams.Add(1)
 	go s.outbound(s.ctx, stream)
-	fmt.Println(stream.ID, "added.")
+	Info(stream.ID, "added.")
 }
 
 func (s *Session) Start(ctx context.Context) {
@@ -302,7 +303,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	})
 	// 2. Wait for STREAM_CONFIRMED message
 	receivedId := <-s.streamConfirm
-	fmt.Println("Stream confirmed:", streamID)
+	Info("Stream confirmed:", streamID)
 	if receivedId != streamID {
 		return nil, fmt.Errorf("stream ID mismatch: expected %s, got %s", streamID, receivedId)
 	}
@@ -315,7 +316,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	streamID := <-s.streamOpen
 	stream := NewStream(streamID)
 	s.addStream(stream)
-	fmt.Println("Accept stream:", streamID)
+	Info("Accept stream:", streamID)
 	// 2. Send STREAM_CONFIRMED message
 	msg := ControlMsg{
 		Type: CONTROL_STREAM_CONFIRMED,
