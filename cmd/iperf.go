@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"runtime/pprof"
@@ -53,7 +55,6 @@ func startMTMuxServer() {
 
 		go func(stream *mtmux.Stream) {
 			reader := bufio.NewReader(stream)
-			defer stream.Close()
 			addrLine, err := reader.ReadString('\n')
 			if err != nil {
 				log.Printf("Read addr from stream error: %v", err)
@@ -82,6 +83,7 @@ func startMTMuxServer() {
 				if err != nil {
 					log.Printf("stream->conn copy error: %v", err)
 				}
+				log.Println("Stream closed:", stream.IsClosed())
 				conn.(*net.TCPConn).CloseWrite()
 				log.Printf("Exit server copy from stream to conn (copied %d bytes)", n)
 			}()
@@ -95,6 +97,7 @@ func startMTMuxServer() {
 				}
 				stream.CloseWrite()
 				conn.(*net.TCPConn).CloseRead()
+				log.Println("Stream closed:", stream.IsClosed())
 				log.Printf("Exit server copy from conn to stream (copied %d bytes)", n)
 			}()
 
@@ -120,7 +123,6 @@ func startMTMuxClient() {
 	}
 	session.Start(context.Background())
 	log.Println("client", session.ID)
-	defer session.Close()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:15200")
 	if err != nil {
@@ -141,11 +143,9 @@ func startMTMuxClient() {
 			log.Printf("OpenStream returned error: %v", err)
 			return
 		}
-		// defer stream.Close()
 
 		go func(localConn net.Conn, stream *mtmux.Stream) {
 			defer localConn.Close()
-			defer stream.Close()
 
 			time.Sleep(1000 * time.Millisecond)
 			target := "127.0.0.1:5201\n"
@@ -169,6 +169,7 @@ func startMTMuxClient() {
 				// Close write end to signal EOF to remote
 				stream.CloseWrite()
 				localConn.(*net.TCPConn).CloseRead()
+				log.Println("Stream closed:", stream.IsClosed())
 				log.Printf("Exit client copy from local to stream (copied %d bytes)", n)
 			}()
 
@@ -180,6 +181,7 @@ func startMTMuxClient() {
 					log.Printf("stream->local copy error: %v", err)
 				}
 				localConn.(*net.TCPConn).CloseWrite()
+				log.Println("Stream closed:", stream.IsClosed())
 				log.Printf("Exit client copy from stream to local (copied %d bytes)", n)
 			}()
 
@@ -228,6 +230,13 @@ func copyWithLogging(dst io.Writer, src io.Reader, name, peer string) {
 }
 
 func main() {
+	go func() {
+		ip := "0.0.0.0:16060"
+		if err := http.ListenAndServe(ip, nil); err != nil {
+			fmt.Printf("start pprof failed on %s\n", ip)
+			os.Exit(1)
+		}
+	}()
 	f, _ := os.Create("CPU.out")
 	defer f.Close()
 	pprof.StartCPUProfile(f)

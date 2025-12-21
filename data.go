@@ -36,3 +36,9 @@ func (sb *SafeBuffer) ReadWhenNotEmpty(p []byte) (n int, err error) {
 	}
 	return sb.buf.Read(p)
 }
+
+func (sb *SafeBuffer) Reset() {
+	sb.lock.Lock()
+	defer sb.lock.Unlock()
+	sb.buf.Reset()
+}

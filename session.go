@@ -126,16 +126,20 @@ func (s *Session) inbound(ctx context.Context, conn net.Conn) {
 		}
 
 		err = stream.Deliver(rawData, f.DataIndex, f.IsEOF)
-		if err != nil {
-			if errors.Is(err, io.ErrClosedPipe) {
-				s.streams.Delete(f.StreamID)
-			} else {
-				Error("Error delivering data to stream:", err)
-			}
-		}
+		// if f.DataLen == 0 {
+		// 	Info("Stream", f.StreamID, "received EOF.")
+		// }
+		// if err != nil {
+		// 	if errors.Is(err, io.ErrClosedPipe) {
+		// 		s.streams.Delete(f.StreamID)
+		// 	} else {
+		// 		Error("Error delivering data to stream:", err)
+		// 	}
+		// }
 	}
 }
 
+// TODO: memory analysis and optimization (maybe some memory leak?)
 // outbound handles outgoing data for a single stream.
 func (s *Session) outbound(ctx context.Context, stream *Stream) {
 	for {
@@ -151,6 +155,7 @@ func (s *Session) outbound(ctx context.Context, stream *Stream) {
 			}
 			conn := <-s.outConnChan
 			if !ok {
+				f.IsEOF = true
 				frameData, _ := json.MarshalNoEscape(f)
 				frameData = append(frameData, '\n')
 				_, err := conn.Write(frameData)
@@ -182,7 +187,7 @@ func (s *Session) outbound(ctx context.Context, stream *Stream) {
 					}
 					var n int64
 					// TCPConn has writeBuffers method to optimize multiple writes by using writev syscall
-					if tcpConn, _ := conn.(*net.TCPConn); false {
+					if tcpConn, ok := conn.(*net.TCPConn); ok {
 						// Directly write to connection to avoid extra allocation
 						buffer := net.Buffers{frameData, []byte{'\n'}, data}
 						n, err = buffer.WriteTo(tcpConn)
@@ -284,8 +289,11 @@ func (s *Session) addStream(stream *Stream) {
 
 func (s *Session) Start(ctx context.Context) {
 	s.ctx = ctx
-	s.addStream(NewStream(CONTROL_STREAM_ID))
-	go s.streamsGarbageCollector(ctx)
+	s.addStream(NewStream(CONTROL_STREAM_ID, func(id string) {
+		s.streams.Delete(id)
+		Info("Control stream closed, session exiting.")
+	}))
+	// go s.streamsGarbageCollector(ctx)
 	for _, conn := range s.connBundle {
 		go s.inbound(ctx, conn)
 	}
@@ -320,7 +328,10 @@ func (s *Session) NumStreams() int {
 
 func (s *Session) OpenStream() (*Stream, error) {
 	streamID := rand.Text()
-	stream := NewStream(streamID)
+	stream := NewStream(streamID, func(id string) {
+		s.streams.Delete(id)
+		Info("Stream", id, "closed.")
+	})
 	s.addStream(stream)
 	// 1. Send OPEN_STREAM control message
 	s.sendControlMsg(&ControlMsg{
@@ -340,7 +351,11 @@ func (s *Session) OpenStream() (*Stream, error) {
 func (s *Session) AcceptStream() (*Stream, error) {
 	// 1. Wait for OPEN_STREAM message
 	streamID := <-s.streamOpen
-	stream := NewStream(streamID)
+	stream := NewStream(streamID, func(id string) {
+		// Capture the session memory address
+		s.streams.Delete(id)
+		Info("Stream", id, "closed.")
+	})
 	s.addStream(stream)
 	Info("Accept stream:", streamID)
 	// 2. Send STREAM_CONFIRMED message

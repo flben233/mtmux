@@ -17,6 +17,7 @@ type Stream struct {
 	ReadIndex    atomic.Uint64 // Received data index
 	WriteIndex   atomic.Uint64 // Sent data index
 	UnorderedBuf map[uint64][]byte
+	Finalize     func(StreamID string)
 	endIndex     atomic.Uint64
 	writeClosed  atomic.Bool
 	deliverLock  sync.Mutex
@@ -28,13 +29,14 @@ type Stream struct {
 const STREAM_BUFFER_SIZE = 32 * 1024 // 32KB buffer size
 
 // NewStream creates a new stream with the given streamID
-func NewStream(streamID string) *Stream {
+func NewStream(streamID string, finalize func(string)) *Stream {
 	stream := Stream{
 		ID:           streamID,
 		ReadBuf:      &SafeBuffer{buf: bytes.NewBuffer(make([]byte, 0))},
 		WriteBuf:     make(chan []byte),
 		UnorderedBuf: make(map[uint64][]byte),
 		readCond:     sync.NewCond(&sync.Mutex{}),
+		Finalize:     finalize,
 	}
 	stream.bufPool = &sync.Pool{
 		New: func() interface{} {
@@ -70,6 +72,9 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 	if s.writeClosed.Load() {
 		return 0, io.ErrClosedPipe
 	}
+	if len(b) == 0 {
+		return 0, nil
+	}
 	var nb []byte
 	if len(b) > STREAM_BUFFER_SIZE {
 		nb = make([]byte, len(b))
@@ -83,24 +88,39 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 }
 
 func (s *Stream) Close() error {
-	if !s.writeClosed.Load() {
-		close(s.WriteBuf)
-	}
-	s.writeClosed.Store(true)
-	s.endIndex.Store(s.ReadIndex.Load())
+	s.CloseWrite()
+	s.CloseRead()
 	// Flush unordered buffer
 	Info(s.ID, "Remaining:", len(s.UnorderedBuf))
 	return nil
 }
 
+// In the most cases, CloseRead is called when EOF is received from remote side.
 func (s *Stream) CloseRead() error {
+	if s.IsReadClosed() {
+		return nil
+	}
+	s.ReadBuf.Reset()
 	s.endIndex.Store(s.ReadIndex.Load())
+	s.eof.Store(true)
+	if s.IsClosed() && s.Finalize != nil {
+		s.Finalize(s.ID)
+	}
 	return nil
 }
 
+// CloseWrite closes the write end of the stream.
+// Can be used to signal EOF to the remote side.
+// You need to call CloseRead to prevent resource leak when EOF from remote side isn't received. (e.g., setting a timeout and closing the stream)
 func (s *Stream) CloseWrite() error {
+	if s.IsWriteClosed() {
+		return nil
+	}
 	s.writeClosed.Store(true)
 	close(s.WriteBuf)
+	if s.IsClosed() && s.Finalize != nil {
+		s.Finalize(s.ID)
+	}
 	return nil
 }
 
