@@ -176,7 +176,7 @@ func (s *Session) outbound(ctx context.Context, stream *Stream) {
 					// Directly write to connection to avoid extra allocation
 					buffer := net.Buffers{frameData, []byte{'\n'}, data}
 					// TCPConn has writeBuffers method to optimize multiple writes by using writev syscall
-					n, err := buffer.WriteTo(conn)
+					n, err := buffer.WriteTo(conn.(*net.TCPConn))
 					if n != int64(len(frameData)+1+len(data)) {
 						Error("Incomplete write to connection:", n, "expected:", len(frameData)+1+len(data))
 					}

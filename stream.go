@@ -12,7 +12,7 @@ import (
 
 type Stream struct {
 	ID           string
-	ReadBuf      *bytes.Buffer
+	ReadBuf      *SafeBuffer
 	WriteBuf     chan []byte
 	ReadIndex    atomic.Uint64 // Received data index
 	WriteIndex   atomic.Uint64 // Sent data index
@@ -21,7 +21,6 @@ type Stream struct {
 	writeClosed  atomic.Bool
 	deliverLock  sync.Mutex
 	readCond     *sync.Cond
-	readLock     sync.Mutex
 	eof          atomic.Bool
 	bufPool      *sync.Pool
 }
@@ -32,7 +31,7 @@ const STREAM_BUFFER_SIZE = 32 * 1024 // 32KB buffer size
 func NewStream(streamID string) *Stream {
 	stream := Stream{
 		ID:           streamID,
-		ReadBuf:      bytes.NewBuffer(make([]byte, 0)),
+		ReadBuf:      &SafeBuffer{buf: bytes.NewBuffer(make([]byte, 0))},
 		WriteBuf:     make(chan []byte),
 		UnorderedBuf: make(map[uint64][]byte),
 		readCond:     sync.NewCond(&sync.Mutex{}),
@@ -55,11 +54,7 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		s.readCond.Wait()
 	}
 	// Read data from buffer
-	s.readLock.Lock()
-	if s.ReadBuf.Len() != 0 {
-		n, err = s.ReadBuf.Read(b)
-	}
-	s.readLock.Unlock()
+	n, err = s.ReadBuf.ReadWhenNotEmpty(b)
 	if err != nil {
 		Error("Read buffer err:", err)
 	}
