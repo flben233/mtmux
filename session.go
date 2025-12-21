@@ -139,8 +139,8 @@ func (s *Session) outbound(ctx context.Context, stream *Stream) {
 			f := Frame{
 				StreamID:  stream.ID,
 				DataLen:   0,
-				DataIndex: stream.WriteIndex.Add(1),
-				IsEOF:     !ok,
+				DataIndex: 0,
+				IsEOF:     false,
 			}
 			conn := <-s.outConnChan
 			if !ok {
@@ -163,23 +163,25 @@ func (s *Session) outbound(ctx context.Context, stream *Stream) {
 					data := dataBlock[:size]
 					dataBlock = dataBlock[size:]
 					f.DataLen = uint64(size)
+					f.DataIndex = stream.WriteIndex.Add(1)
+					if totalSize == 0 && stream.IsWriteClosed() {
+						f.IsEOF = true
+					}
 					// Send frame over one of the connections in the bundle
 					frameData, err := json.Marshal(f)
 					if err != nil {
 						Error("Error marshaling frame:", err)
 						continue
 					}
-					// TODO: 排查这个net.Buffers导致的数据不完整的问题
-					// buffer := net.Buffers{frameData, []byte{'\n'}, data}
-					// _, err = buffer.WriteTo(conn)
-					// if err != nil {
-					// 	fmt.Println("Error writing frame to connection:", err)
-					// }
-					frameData = append(frameData, '\n')
-					frameData = append(frameData, data...)
-					_, err = conn.Write(frameData)
+					// Directly write to connection to avoid extra allocation
+					buffer := net.Buffers{frameData, []byte{'\n'}, data}
+					// TCPConn has writeBuffers method to optimize multiple writes by using writev syscall
+					n, err := buffer.WriteTo(conn)
+					if n != int64(len(frameData)+1+len(data)) {
+						Error("Incomplete write to connection:", n, "expected:", len(frameData)+1+len(data))
+					}
 					if err != nil {
-						Error("Error writing frame to connection:", err)
+						fmt.Println("Error writing frame to connection:", err)
 					}
 				}
 				s.outConnChan <- conn
