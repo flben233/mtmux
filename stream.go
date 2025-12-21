@@ -19,13 +19,14 @@ type Stream struct {
 	UnorderedBuf map[uint64][]byte
 	endIndex     atomic.Uint64
 	writeClosed  atomic.Bool
-	mu           sync.Mutex
+	deliverLock  sync.Mutex
 	readCond     *sync.Cond
+	readLock     sync.Mutex
 	eof          atomic.Bool
 	bufPool      *sync.Pool
 }
 
-const BUFFER_SIZE = 32 * 1024 // 32KB buffer size
+const STREAM_BUFFER_SIZE = 32 * 1024 // 32KB buffer size
 
 // NewStream creates a new stream with the given streamID
 func NewStream(streamID string) *Stream {
@@ -38,7 +39,7 @@ func NewStream(streamID string) *Stream {
 	}
 	stream.bufPool = &sync.Pool{
 		New: func() interface{} {
-			return make([]byte, 0, BUFFER_SIZE) // Adjust size as needed
+			return make([]byte, 0, STREAM_BUFFER_SIZE) // Adjust size as needed
 		},
 	}
 	return &stream
@@ -54,9 +55,13 @@ func (s *Stream) Read(b []byte) (n int, err error) {
 		s.readCond.Wait()
 	}
 	// Read data from buffer
-	n, err = s.ReadBuf.Read(b)
+	s.readLock.Lock()
+	if s.ReadBuf.Len() != 0 {
+		n, err = s.ReadBuf.Read(b)
+	}
+	s.readLock.Unlock()
 	if err != nil {
-		Error("Err:", err)
+		Error("Read buffer err:", err)
 	}
 	if errors.Is(err, io.EOF) {
 		err = nil
@@ -71,7 +76,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		return 0, io.ErrClosedPipe
 	}
 	var nb []byte
-	if len(b) > BUFFER_SIZE {
+	if len(b) > STREAM_BUFFER_SIZE {
 		nb = make([]byte, len(b))
 	} else {
 		nb = s.bufPool.Get().([]byte)
@@ -116,8 +121,8 @@ func (s *Stream) RemoteAddr() net.Addr {
 
 // DO NOT MODIFY data AFTER PASSING TO Deliver
 func (s *Stream) Deliver(data []byte, idx uint64, isEOF bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.deliverLock.Lock()
+	defer s.deliverLock.Unlock()
 
 	// Check if read end is closed
 	if s.IsReadClosed() {
