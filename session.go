@@ -28,6 +28,7 @@ type Session struct {
 	isClosed      bool
 	numStreams    atomic.Int64
 	ctx           context.Context
+	bufPool       *sync.Pool
 }
 
 type Frame struct {
@@ -44,6 +45,7 @@ type ControlMsg struct {
 }
 
 const (
+	SESSION_BUFFER_SIZE      = STREAM_BUFFER_SIZE + 1024 // Extra 1KB for session header
 	CONTROL_STREAM_ID        = "0"
 	CONTROL_TYPE_OPEN_STREAM = "OPEN_STREAM"
 	CONTROL_STREAM_CONFIRMED = "STREAM_CONFIRMED"
@@ -63,6 +65,11 @@ func newSession(conns []net.Conn, config *Config) *Session {
 		config:        config,
 		streamOpen:    make(chan string, 1),
 		streamConfirm: make(chan string, 1),
+		bufPool: &sync.Pool{
+			New: func() interface{} {
+				return make([]byte, 0, 32*1024) // 32KB buffer size
+			},
+		},
 	}
 }
 
@@ -173,10 +180,23 @@ func (s *Session) outbound(ctx context.Context, stream *Stream) {
 						Error("Error marshaling frame:", err)
 						continue
 					}
-					// Directly write to connection to avoid extra allocation
-					buffer := net.Buffers{frameData, []byte{'\n'}, data}
+					var n int64
 					// TCPConn has writeBuffers method to optimize multiple writes by using writev syscall
-					n, err := buffer.WriteTo(conn.(*net.TCPConn))
+					if tcpConn, _ := conn.(*net.TCPConn); false {
+						// Directly write to connection to avoid extra allocation
+						buffer := net.Buffers{frameData, []byte{'\n'}, data}
+						n, err = buffer.WriteTo(tcpConn)
+					} else {
+						// Fallback for non-TCP connections
+						buf := s.bufPool.Get().([]byte)
+						buf = append(buf[:0], frameData...)
+						buf = append(buf, '\n')
+						buf = append(buf, data...)
+						wn, errw := conn.Write(buf)
+						err = errw
+						n = int64(wn)
+						s.bufPool.Put(buf[:0])
+					}
 					if n != int64(len(frameData)+1+len(data)) {
 						Error("Incomplete write to connection:", n, "expected:", len(frameData)+1+len(data))
 					}
