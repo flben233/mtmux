@@ -91,7 +91,7 @@ func (s *Stream) Close() error {
 	s.CloseWrite()
 	s.CloseRead()
 	// Flush unordered buffer
-	Info(s.ID, "Remaining:", len(s.UnorderedBuf))
+	Info(s.ID, "closed, Remaining:", len(s.UnorderedBuf))
 	return nil
 }
 

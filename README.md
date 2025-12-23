@@ -72,6 +72,24 @@ go get github.com/flben233/mtmux
 
 ## Example
 
+### Use as tunnel
+
+Server side:
+
+```shell
+mtmux -m server -p 12345 -t 8
+```
+
+Client side:
+
+Connect to server at `127.0.0.1:12345` and listen on local port `15200`, forwarding to target on server side `127.0.0.1:5201`.
+
+```shell
+mtmux -m client -p 15200 -s 127.0.0.1:12345 -d 127.0.0.1:5201 -t 8
+```
+
+### Use as library
+
 Server:
 
 ```go
