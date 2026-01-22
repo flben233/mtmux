@@ -2,6 +2,8 @@
 
 mtmux is a Go library that enables multiplexing multiple logical streams over multiple TCP tunnels. It allows for efficient data transfer by distributing the load across several connections, improving performance and reliability.
 
+Each data frame from a certain incoming connection will be delivered by a random TCP tunnel so it may avoid QoS issues.
+
 ```mermaid
 graph LR
     S1[Stream 1]
